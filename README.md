@@ -17,4 +17,4 @@ no command specified
 install   install dependencies
 sync      sync desktop files
 reset     remove desktop files
-'''
+```
