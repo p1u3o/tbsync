@@ -1,0 +1,162 @@
+#!/bin/bash
+
+tmp_dir=""
+toolbox="$HOME/.local/bin/toolbox"
+
+install_deps()
+{
+    if [ ! -f /usr/bin/desktop-file-edit ]; then
+        echo "Setup: Install desktop-file-utils"
+        sudo dnf -y install desktop-file-utils
+    fi
+}
+
+main()
+{
+    command=$1
+    shift
+
+    install_deps
+
+    case $command in
+        install )
+            install_deps
+            ;;
+        sync )
+            sync_desktop_files
+            ;;
+        reset )
+            reset
+        ;;
+    esac       
+}
+
+
+prepare_env()
+{
+    if [ -z $tmp_dir ]; then
+        tmp_dir=$(/usr/bin/mktemp -d -t tbsync-XXXX)
+        echo "$tmp_dir created"
+    fi  
+}
+
+
+cleanup()
+{
+    if [ -n "$tmp_dir" ]; then
+        echo "removing $tmp_dir"
+        rm -r $tmp_dir
+    fi
+}
+
+
+reset()
+{
+    rm -r ~/.local/share/icons/toolbox
+    rm -r ~/.local/share/applications/toolbox
+
+    gsettings set org.gnome.desktop.app-folders folder-children "['Utilities', 'YaST']"
+    gsettings reset-recursively org.gnome.desktop.app-folders.folder:/org/gnome/desktop/app-folders/folders/Toolbox/
+    
+}
+
+
+sync_desktop_files()
+{
+    mkdir -p $HOME/.local/share/applications/toolbox/
+    mkdir -p $HOME/.local/share/icons/toolbox/
+
+    gsettings set org.gnome.desktop.app-folders folder-children "['Utilities', 'YaST', 'Toolbox']"
+    gsettings set org.gnome.desktop.app-folders.folder:/org/gnome/desktop/app-folders/folders/Toolbox/ name 'Toolbox'
+    gsettings set org.gnome.desktop.app-folders.folder:/org/gnome/desktop/app-folders/folders/Toolbox/ categories "['X-Toolbox']"
+
+    for i in /usr/share/applications/*; do
+        if [ "${i}" != "${i%.desktop}" ]; then
+            if [ "$(head -1 $i)" == "[Desktop Entry]" ]; then
+                sync_desktop_file $i 
+            fi
+        fi
+    done
+
+}
+
+sync_desktop_file()
+{
+    prepare_env
+
+    echo "syncing" $1
+    basename=$(basename "$1")
+    cmd=$(grep '^Exec=' $1 | head -1 | sed 's/^Exec=//');
+    name=$(grep '^Name=' $1 | head -1 | sed 's/^Name=//');
+    class=$(grep '^StartupWMClass=' $1 | head -1 | sed 's/^StartupWMClass=//');
+    icon_original=$(grep '^Icon=' $1 | head -1 | sed 's/^Icon=//');
+    icon=""
+
+    if [ -f $icon_original ]; then
+        filename=$(basename -- "$icon_original")
+        cp $icon_original $HOME/.local/share/icons/toolbox/$filename
+        icon="$HOME/.local/share/icons/toolbox/$filename"
+    elif [ -f /usr/share/icons/hicolor/scalable/apps/$icon_original.svg ]; then
+        cp /usr/share/icons/hicolor/scalable/apps/$icon_original.svg $HOME/.local/share/icons/toolbox/$icon_original.svg
+        icon="$HOME/.local/share/icons/toolbox/$icon_original.svg"
+    elif [ -f /usr/share/icons/Adwaita/256x256/legacy/$icon_original.png ]; then
+        cp /usr/share/icons/Adwaita/256x256/legacy/$icon_original.png $HOME/.local/share/icons/toolbox/$icon_original.png
+        icon="$HOME/.local/share/icons/toolbox/$icon_original.png"
+    elif [ -f /usr/share/icons/hicolor/48x48/apps/$icon_original.png ]; then
+        cp /usr/share/icons/hicolor/48x48/apps/$icon_original.png $HOME/.local/share/icons/toolbox/$icon_original.png
+        icon="$HOME/.local/share/icons/toolbox/$icon_original.png"
+    elif [ -f /usr/share/icons/hicolor/32x32/apps/$icon_original.png ]; then
+        cp /usr/share/icons/hicolor/32x32/apps/$icon_original.png $HOME/.local/share/icons/toolbox/$icon_original.png
+        icon="$HOME/.local/share/icons/toolbox/$icon_original.png"
+    else
+        icon="application-x-executable"
+    fi
+
+    touch $tmp_dir/$basename
+    desktop-file-edit --set-key=Exec --set-value="$HOME/.local/bin/toolbox run $cmd" \
+                      --set-key=Icon --set-value="$icon" \
+                      --set-key=Categories --set-value='X-Toolbox' \
+                      --set-key=Name --set-value="$name (on Toolbox)" \
+                      --set-key=Type --set-value='Application' \
+                      --set-key=StartupWMClass --set-value="$class" \
+                      $tmp_dir/$basename
+
+    cp $tmp_dir/$basename $HOME/.local/share/applications/toolbox/
+
+
+}
+
+run_command()
+{
+    $HOME/.local/bin/toolbox run $1 $2
+}
+
+
+if [ "$1" = "" ]; then
+    echo "no command specified" >&2
+    echo >&2
+    echo "install   install dependencies" >&2
+    echo "sync      sync desktop files" >&2
+    echo "reset     remove desktop files" >&2
+    exit 1
+fi
+
+if [ ! -f $toolbox ]; then
+    echo "Setup: Install patched toolbox"
+    curl https://raw.githubusercontent.com/debarshiray/toolbox/7a70d9372b68777f394a273adf4ab67c5b8d9024/toolbox -o $toolbox
+    chmod +x $toolbox
+fi
+
+if [ ! -f $toolbox ]; then
+    exit 0;
+fi
+
+if [ ! -f /usr/bin/podman ]; then
+    main "$@"
+    cleanup
+else
+    path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+    $toolbox run $path $@
+fi
+
+
